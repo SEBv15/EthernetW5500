@@ -41,19 +41,35 @@ void EthernetClass::hardreset() {
     }
   }
 
-#if defined(WIZ550io_WITH_MACADDRESS)
+#if defined(WIZ550io_WITH_MACADDRESS) || defined(PICO_RP2350) || defined(PICO_RP2040)
 
 int EthernetClass::begin(void)
 {
   uint8_t mac_address[6] ={0,};
-  if (_dhcp == nullptr) {
-    _dhcp = new DhcpClass();
-  }
+  _dhcp = new DhcpClass();
 
   // Initialise the basic info
   w5500.init(_maxSockNum, _pinCS);
   w5500.setIPAddress(IPAddress(0,0,0,0).raw_address());
-  w5500.getMACAddress(mac_address);
+  #if defined(WIZ550io_WITH_MACADDRESS)
+    w5500.getMACAddress(mac_address);
+  #endif
+  #if defined(PICO_RP2350) || defined(PICO_RP2040)
+    uint32_t rnd1 = get_rand_32();
+    mac_address[0] = rnd1 >> 24;
+    mac_address[1] = rnd1 >> 16;
+    mac_address[2] = rnd1 >> 8;
+    mac_address[3] = rnd1;
+    uint32_t rnd2 = get_rand_32();
+    mac_address[4] = rnd2 >> 24;
+    mac_address[5] = rnd2 >> 16;
+
+    mac_address[0] &= ~(1 << 0); // unicast = 0, multicast / broadcast = 1
+    mac_address[0] |= 1 << 1; // local = 1, universal = 0
+    mac_address[0] &= ~(1 << 2) & ~(1 << 3); // administratively assigned
+
+    w5500.setMACAddress(mac_address);
+  #endif
 
   if (strlen(_customHostname) != 0)
   {
@@ -101,18 +117,34 @@ void EthernetClass::begin(IPAddress local_ip, IPAddress subnet, IPAddress gatewa
 void EthernetClass::begin(IPAddress local_ip, IPAddress subnet, IPAddress gateway, IPAddress dns_server)
 {
   w5500.init(_maxSockNum, _pinCS);
+  #if defined(PICO_RP2350) || defined(PICO_RP2040)
+    uint8_t mac[6];
+    uint32_t rnd1 = get_rand_32();
+    mac[0] = rnd1 >> 24;
+    mac[1] = rnd1 >> 16;
+    mac[2] = rnd1 >> 8;
+    mac[3] = rnd1;
+    uint32_t rnd2 = get_rand_32();
+    mac[4] = rnd2 >> 24;
+    mac[5] = rnd2 >> 16;
+
+    mac[0] &= ~(1 << 0); // unicast = 0, multicast / broadcast = 1
+    mac[0] |= 1 << 1; // local = 1, universal = 0
+    mac[0] &= ~(1 << 2) & ~(1 << 3); // administratively assigned
+
+    w5500.setMACAddress(mac);
+  #endif
   w5500.setIPAddress(local_ip.raw_address());
   w5500.setGatewayIp(gateway.raw_address());
   w5500.setSubnetMask(subnet.raw_address());
   _dnsServerAddress = dns_server;
 }
 
-#else
+#endif
+
 int EthernetClass::begin(uint8_t *mac_address)
 {
-  if (_dhcp == nullptr) {
-    _dhcp = new DhcpClass();
-  }
+  _dhcp = new DhcpClass();
   // Initialise the basic info
   w5500.init(_maxSockNum, _pinCS);
   w5500.setMACAddress(mac_address);
@@ -171,8 +203,6 @@ void EthernetClass::begin(uint8_t *mac, IPAddress local_ip, IPAddress subnet, IP
   w5500.setSubnetMask(subnet.raw_address());
   _dnsServerAddress = dns_server;
 }
-
-#endif
 
 int EthernetClass::maintain(){
   int rc = DHCP_CHECK_NONE;

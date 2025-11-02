@@ -4,6 +4,10 @@ based on the Ethernet2 library of arduino.org
 
 I added many new functionalities.
 
+## new in 1.6
+- "EthernetUdp3.h" must not more included
+- auto generated MAC address for Raspberry Pi Pico and Pico2
+
 ## new in 1.5
 - custom hostname for DHCP
 - the PHY is configurable
@@ -14,7 +18,6 @@ You need to include
 
 ```cpp
 #include <Ethernet3.h> // instead Ethernet.h
-#include <EthernetUdp3.h> // instead EthernetUdp.h for UDP functionality
 ```
 
 ## Custom Hostname
@@ -61,6 +64,7 @@ The init of the Ethernetinterface changed, the ordner is now:
 
 ```cpp
 Ethernet.begin(mac, ip, subnet, gateway, dns);
+Ethernet.begin(ip, subnet, gateway, dns); // for WIZ550io and RP Pico with auto genereted MAC address
 ```
 
 This is more logical.

@@ -15,7 +15,11 @@
 #include "IPAddress.h"
 #include "EthernetClient.h"
 #include "EthernetServer.h"
+#include "EthernetUdp3.h"
 #include "Dhcp.h"
+#if defined(PICO_RP2040) || defined(PICO_RP2350)
+  #include "pico/stdlib.h"
+#endif
 
 enum phyMode_t {
   HALF_DUPLEX_10,
@@ -56,18 +60,18 @@ public:
   uint8_t softreset(); // can set only after Ethernet.begin
   void hardreset(); // You need to set the Rst pin
 
-#if defined(WIZ550io_WITH_MACADDRESS)
-
+#if defined(WIZ550io_WITH_MACADDRESS) || defined(PICO_RP2350) || defined(PICO_RP2040)
   // Initialize function when use the ioShield serise (included WIZ550io)
   // WIZ550io has a MAC address which is written after reset.
   // Default IP, Gateway and subnet address are also writen.
   // so, It needs some initial time. please refer WIZ550io Datasheet in details.
+  // It also allows a random generated MAC address for Raspberry Pi Pico(2)
   int begin(void);
   void begin(IPAddress local_ip);
   void begin(IPAddress local_ip, IPAddress subnet);
   void begin(IPAddress local_ip, IPAddress subnet, IPAddress gateway);
   void begin(IPAddress local_ip, IPAddress subnet, IPAddress gateway, IPAddress dns_server);
-#else
+#endif
   // Initialize the Ethernet shield to use the provided MAC address and gain the rest of the
   // configuration through DHCP.
   // Returns 0 if the DHCP configuration failed, and 1 if it succeeded
@@ -76,7 +80,6 @@ public:
   void begin(uint8_t *mac_address, IPAddress local_ip, IPAddress subnet);
   void begin(uint8_t *mac_address, IPAddress local_ip, IPAddress subnet, IPAddress gateway);
   void begin(uint8_t *mac_address, IPAddress local_ip, IPAddress subnet, IPAddress gateway, IPAddress dns_server);
-#endif
 
   int maintain();
   void WoL(bool wol); // set Wake on LAN

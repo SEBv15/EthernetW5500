@@ -131,7 +131,7 @@ public:
 class W5500Class {
 
 public:
-  void init(uint8_t socketNumbers, uint8_t ss_pin = 10);
+  void init(uint8_t socketNumbers, uint8_t ss_pin = 10, uint16_t startupDelayMs = 1000);
   static uint8_t softReset(void);
   uint8_t readVersion(void);
 
@@ -239,7 +239,8 @@ public:
   __GP_REGISTER_N(SHAR,   0x0009, 6); // Source MAC address
   __GP_REGISTER_N(SIPR,   0x000F, 4); // Source IP address
   __GP_REGISTER8 (IR,     0x0015);    // Interrupt
-  __GP_REGISTER8 (IMR,    0x0016);    // Interrupt Mask
+  __GP_REGISTER8 (IMR,    0x0016);    // Interrupt Mask (general)
+  __GP_REGISTER8 (SIMR,   0x0018);    // Socket Interrupt Mask (route Sn_IR to INT pin)
   __GP_REGISTER16(RTR,    0x0019);    // Timeout address
   __GP_REGISTER8 (RCR,    0x001B);    // Retry count
   __GP_REGISTER_N(UIPR,   0x0028, 4); // Unreachable IP address in UDP mode
@@ -308,6 +309,7 @@ public:
   __SOCKET_REGISTER8(SnCR,        0x0001)        // Command
   __SOCKET_REGISTER8(SnIR,        0x0002)        // Interrupt
   __SOCKET_REGISTER8(SnSR,        0x0003)        // Status
+  __SOCKET_REGISTER8(SnIMR,       0x002C)        // Per-socket Interrupt Mask
   __SOCKET_REGISTER16(SnPORT,     0x0004)        // Source Port
   __SOCKET_REGISTER_N(SnDHAR,     0x0006, 6)     // Destination Hardw Addr
   __SOCKET_REGISTER_N(SnDIPR,     0x000C, 4)     // Destination IP Addr

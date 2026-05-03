@@ -4,9 +4,14 @@ extern "C" {
 #include "string.h"
 }
 
-#include "Ethernet3.h"
+#include "EthernetW5500.h"
 #include "EthernetClient.h"
 #include "EthernetServer.h"
+
+// Yield-once tracker: bit `s` set == socket s has already been returned by
+// accept() and the caller "owns" it. Cleared when the socket leaves
+// ESTABLISHED state (CLOSED, FIN_WAIT, etc.) so the slot can be re-used.
+static uint8_t _accepted_mask = 0;
 
 EthernetServer::EthernetServer(uint16_t port)
 {
@@ -26,7 +31,7 @@ void EthernetServer::begin()
   }
 }
 
-void EthernetServer::accept()
+void EthernetServer::_relisten()
 {
   int listening = 0;
 
@@ -34,10 +39,16 @@ void EthernetServer::accept()
     EthernetClient client(sock);
 
     if (EthernetClass::_server_port[sock] == _port) {
-      if (client.status() == SnSR::LISTEN) {
+      uint8_t st = client.status();
+      // Reap previously-yielded sockets so accept() can re-yield them after
+      // a future re-connect on the same socket index.
+      if (st != SnSR::ESTABLISHED && st != SnSR::CLOSE_WAIT) {
+        _accepted_mask &= ~(1 << sock);
+      }
+      if (st == SnSR::LISTEN) {
         listening = 1;
       }
-      else if (client.status() == SnSR::CLOSE_WAIT && !client.available()) {
+      else if (st == SnSR::CLOSE_WAIT && !client.available()) {
         client.stop();
       }
     }
@@ -48,9 +59,25 @@ void EthernetServer::accept()
   }
 }
 
+EthernetClient EthernetServer::accept()
+{
+  _relisten();
+
+  for (int sock = 0; sock < MAX_SOCK_NUM; sock++) {
+    if (EthernetClass::_server_port[sock] != _port) continue;
+    if (_accepted_mask & (1 << sock)) continue;
+    EthernetClient client(sock);
+    if (client.status() == SnSR::ESTABLISHED) {
+      _accepted_mask |= (1 << sock);
+      return client;
+    }
+  }
+  return EthernetClient(MAX_SOCK_NUM);
+}
+
 EthernetClient EthernetServer::available()
 {
-  accept();
+  _relisten();
 
   for (int sock = 0; sock < MAX_SOCK_NUM; sock++) {
     EthernetClient client(sock);
@@ -76,7 +103,7 @@ size_t EthernetServer::write(const uint8_t *buffer, size_t size)
 {
   size_t n = 0;
 
-  accept();
+  _relisten();
 
   for (int sock = 0; sock < MAX_SOCK_NUM; sock++) {
     EthernetClient client(sock);

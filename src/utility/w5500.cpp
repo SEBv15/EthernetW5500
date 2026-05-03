@@ -24,11 +24,11 @@ W5500Class w5500;
 SPISettings wiznet_SPI_settings(8000000, MSBFIRST, SPI_MODE0);
 uint8_t SPI_CS;
 
-void W5500Class::init(uint8_t socketNumbers, uint8_t ss_pin)
+void W5500Class::init(uint8_t socketNumbers, uint8_t ss_pin, uint16_t startupDelayMs)
 {
   SPI_CS = ss_pin;
 
-  delay(1000);
+  if (startupDelayMs) delay(startupDelayMs);
   initSS();
   SPI.begin();
 

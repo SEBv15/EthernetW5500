@@ -6,6 +6,7 @@
  
 #include "utility/w5500.h"
 #include "utility/socket.h"
+#include "EthernetW5500.h"
 
 static uint16_t local_port;
 
@@ -28,7 +29,13 @@ uint8_t socket(SOCKET s, uint8_t protocol, uint16_t port, uint8_t flag)
     }
 
     w5500.execCmdSn(s, Sock_OPEN);
-    
+
+    // Sticky Sn_IMR: re-apply the configured per-socket interrupt mask so it
+    // survives socket re-opens (e.g. server accept() cycles).
+    if (Ethernet._socketImr) {
+      w5500.writeSnIMR(s, Ethernet._socketImr);
+    }
+
     return 1;
   }
 

@@ -1,279 +1,285 @@
-# Ethernet3 v1.5.x
-Ethernet library for Arduino and Ethernetshield2 / WIZ550io / WIZ850io / USR-ES1 with Wiznet W5500 chip
-based on the Ethernet2 library of arduino.org
+# EthernetW5500
 
-I added many new functionalities.
+Arduino Ethernet library for the Wiznet **W5500** chip. Forked from
+[sstaub/Ethernet3](https://github.com/sstaub/Ethernet3) v1.6.0 for use in a
+personal project, with a handful of reliability improvements layered on top.
+Everything Ethernet3 already shipped (DHCP, TCP/UDP, multicast, PHY mode
+selection, WoL, etc.) still works — the additions just expose more knobs and
+fix a few rough edges.
 
-## new in 1.6
-- "EthernetUdp3.h" must not more included
-- auto generated MAC address for Raspberry Pi Pico and Pico2
+> [!WARNING]
+> The changes to the library involved a lot of ✨vibe coding✨
+>
+> Everything has been thoroughly tested and seems to work, but exercise caution
 
-## new in 1.5
-- custom hostname for DHCP
-- the PHY is configurable
-- Wake on LAN
-- added new example for webclient "WebClientReadResponse.ino"
+## Installation
 
-You need to include
+This library is **not** in the Arduino Library Manager. Install it from a
+release archive:
+
+1. Go to the [Releases](https://github.com/SEBv15/EthernetW5500/releases) page
+   and download the `.zip` for the latest release.
+2. In the Arduino IDE: **Sketch → Include Library → Add .ZIP Library…** and
+   select the downloaded file.
+3. In your sketch:
+   ```cpp
+   #include <EthernetW5500.h>
+   ```
+   The class is still `EthernetClass` and the global is still `Ethernet`, so
+   sketches written against Ethernet3 only need their `#include` updated.
+
+## What's new compared to Ethernet3 1.6.0
+
+### PHY auto-negotiation fallback
+
+Some cables (long runs, MoCA / powerline bridges) negotiate fine with PC NICs
+but make the W5500's simpler PHY thrash — the link bit briefly comes up, drops,
+comes back, never stabilises. Forcing 10BT-FD makes it work reliably, but only
+on those problem cables; you don't want to force it everywhere because then a
+plain 100M-only switch won't link at all.
+
+`setAutoNegFallback()` lets `Ethernet.begin()` try auto-neg first and fall back
+to a fixed mode only if the link came up but never stayed up. If the link
+never appears at all (cable unplugged), the PHY is left in auto-neg so a later
+plug-in still negotiates correctly.
 
 ```cpp
-#include <Ethernet3.h> // instead Ethernet.h
+// Defaults: stableMs = 1000, totalWaitMs = 3000.
+Ethernet.setAutoNegFallback(FULL_DUPLEX_10);
+Ethernet.begin(mac);  // does the wait + fallback internally
 ```
 
-## Custom Hostname
+The `phyMode_t` values from Ethernet3 are reused (`HALF_DUPLEX_10`,
+`FULL_DUPLEX_10`, `HALF_DUPLEX_100`, `FULL_DUPLEX_100`,
+`FULL_DUPLEX_100_AUTONEG`, `POWER_DOWN`, `ALL_AUTONEG`). Pass `ALL_AUTONEG`
+(or just don't call `setAutoNegFallback()`) to disable the workaround.
 
-For use with DHCP you can set a custom hostname, this must be done before Ethernet.begin(mac).
+### Configurable startup delay
+
+`W5500Class::init()` did a hard 1 second `delay()` before the first SPI
+transaction to let the chip settle after power-up. If your sketch already
+delays in `setup()` before reaching `Ethernet.begin()`, that second is wasted.
+Now adjustable via the second arg to `Ethernet.init()`:
 
 ```cpp
-Ethernet.setHostname(char* hostname);
+Ethernet.init(8, 0);    // 8 sockets, no extra startup delay
+Ethernet.init(8, 250);  // 8 sockets, 250 ms startup delay
+Ethernet.init();        // 8 sockets, 1000 ms (default — same as before)
 ```
 
-## PHY Configuration
+### Configurable DHCP timeouts
 
-The PHY is now configurable, this must done after Ethernet.begin()
-Following modes are possible:
-HALF_DUPLEX_10,
-FULL_DUPLEX_10,
-HALF_DUPLEX_100,
-FULL_DUPLEX_100,
-FULL_DUPLEX_100_AUTONEG,
-POWER_DOWN,
-ALL_AUTONEG (default)
+The bundled Arduino `Ethernet` library accepts DHCP timeouts in `begin()`;
+Ethernet3 dropped them. Restored here, with the same signature:
 
 ```cpp
-Ethernet.phyMode(phyMode_t mode);
+// timeout = total DHCP attempt budget (ms), responseTimeout = per-message wait (ms)
+Ethernet.begin(mac, 4000, 1000);  // fail fast: 4 s total, 1 s per response
+Ethernet.begin(mac);              // unchanged: 60 s / 5 s defaults
 ```
 
-## Wake on LAN
+### Hardware-presence detection
 
-You can set the Wake on LAN functionality
+`hardwareStatus()` returns whether a W5500 actually answered on SPI (probed
+via `VERSIONR` during `begin()`). If no chip is present, `begin()` now returns
+`0` immediately instead of grinding through the DHCP retry loop.
+
+```cpp
+if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+  // … chip not detected (CS wiring? power? wrong CS pin?)
+}
+```
+
+`linkStatus()` returns the cable / link state as an enum, mirroring the
+bundled Ethernet library:
+
+```cpp
+EthernetLinkStatus status = Ethernet.linkStatus();
+// LinkON, LinkOFF, or Unknown (no W5500 detected)
+```
+
+The original `link()` (returning `uint8_t`) is still there.
+
+### Per-socket interrupt mask
+
+The W5500 can route per-socket events to the `INT` pin via `SIMR` + per-socket
+`Sn_IMR`. Ethernet3 didn't expose either, and any direct `Sn_IMR` poke gets
+clobbered the next time the library opens that socket (e.g. on `accept()`).
+
+`enableInterrupts(simr, socketImr)` writes `SIMR` immediately and stores the
+`Sn_IMR` mask, which `socket()` re-applies on every socket open — so
+connection-recycle cycles can't strip it.
+
+```cpp
+// Forward all 8 sockets' CON + RECV events to the INT pin.
+Ethernet.enableInterrupts(0xFF, SnIR::CON | SnIR::RECV);
+```
+
+Use any combination of `SnIR::CON`, `SnIR::DISCON`, `SnIR::RECV`,
+`SnIR::TIMEOUT`, `SnIR::SEND_OK`. Set the corresponding bit in `simr` (one
+bit per socket index, 0–7) for each socket whose events you want forwarded.
+
+### `EthernetServer::accept()` returning a fresh client
+
+Modern Arduino `Ethernet` API: `accept()` returns each newly ESTABLISHED
+client exactly once, regardless of whether data has arrived yet — useful when
+the server needs to send a greeting before the client says anything.
+Ethernet3 only had `available()`, which waits for data first.
+
+```cpp
+EthernetClient c = server.accept();
+if (c) {
+  c.write("HELLO\n", 6);   // can write immediately
+  // … remember c yourself; subsequent accept() won't return this socket again.
+}
+```
+
+`available()` still works as before (returns clients with pending data, may
+return the same client multiple times).
+
+---
+
+## Features inherited from Ethernet3
+
+The sections below come from the upstream Ethernet3 README and document
+behaviour that this fork has not changed.
+
+### Custom DHCP hostname
+
+```cpp
+Ethernet.setHostname(char* hostname);  // call before Ethernet.begin(mac)
+```
+
+### PHY mode selection (runtime)
+
+```cpp
+Ethernet.phyMode(phyMode_t mode);  // call after Ethernet.begin()
+```
+
+`phyMode_t` values: `HALF_DUPLEX_10`, `FULL_DUPLEX_10`, `HALF_DUPLEX_100`,
+`FULL_DUPLEX_100`, `FULL_DUPLEX_100_AUTONEG`, `POWER_DOWN`, `ALL_AUTONEG`
+(default).
+
+### Wake on LAN
 
 ```cpp
 Ethernet.WoL(bool wol);
+bool state = Ethernet.WoL();
 ```
 
-## what's next
-
-In version 2 there will mDNS and a large code cleanup
-
-A new NTP library is published https://github.com/sstaub/NTP
-
-## New init procedure **!!!**
-
-The init of the Ethernetinterface changed, the ordner is now:
+### Static-IP `begin()` overloads
 
 ```cpp
 Ethernet.begin(mac, ip, subnet, gateway, dns);
-Ethernet.begin(ip, subnet, gateway, dns); // for WIZ550io and RP Pico with auto genereted MAC address
+Ethernet.begin(ip, subnet, gateway, dns);  // for WIZ550io / RP Pico with auto-generated MAC
 ```
 
-This is more logical.
-
-    
-## Multicast support
-
-Multicast for udp added. You need to set the Multicast IP address and port to listen.
-
-***example***
-
-```cpp
-EthernetUdp udp
-upd.beginMulticast(multicastIP, port);
-```
-
-## Unicast blocking support
-
-An Unicast blocking function is added to set and get the flag in a UDP socket.
-
-```cpp
-void setUnicastBlock(bool block);
-bool getUnicastBlock();
-```
-
-***example***
+### Multicast UDP
 
 ```cpp
 EthernetUDP udp;
-udp.setUnicastBlock(true); // to restore the value to standard
-udp.setUnicastBlock(false);
-udp.setUnicastBlock();
+udp.beginMulticast(multicastIP, port);
 ```
 
-## PHY support
-
-Added some function to read the PHYCFGR in Ethernet3.
+### Unicast blocking (UDP)
 
 ```cpp
-uint8_t phyState(); // returns the PHYCFGR
-uint8_t link(); // returns the linkstate, 1 = linked, 0 = no link
-const char* linkReport(); // returns the linkstate as a string
-uint8_t speed(); // returns speed in MB/s
-const char* speedReport(); // returns speed as a string
-uint8_t duplex(); // returns duplex mode 0 = no link, 1 = Half Duplex, 2 = Full Duplex
-const char* duplexReport(); // returns duplex mode as a string
+udp.setUnicastBlock(true);
+udp.setUnicastBlock(false);  // restore default
+bool blocked = udp.getUnicastBlock();
 ```
 
-***example***
+### Broadcast blocking (UDP)
 
 ```cpp
-Serial.println(Ethernet.linkReport()); 
+udp.setBroadcastBlock(true);
+udp.setBroadcastBlock(false);  // restore default
+bool blocked = udp.getBroadcastBlock();
 ```
 
-## MAC address
-
-Added some function to read the MAC address in Ethernet3, this is helpfull when you use Wiznet boards like WIZ550io with build in MAC address.
+### PHY status helpers
 
 ```cpp
-void macAddress(uint8_t mac[]); // get the MAC Address
-const char* macAddressReport(); // returns the the MAC Address as a string
+uint8_t  phy   = Ethernet.phyState();   // raw PHYCFGR
+uint8_t  link  = Ethernet.link();       // 1 = linked, 0 = no link
+uint8_t  speed = Ethernet.speed();      // 10 or 100 (MB/s)
+uint8_t  dup   = Ethernet.duplex();     // 0 = no link, 1 = HD, 2 = FD
+const char* linkStr   = Ethernet.linkReport();
+const char* speedStr  = Ethernet.speedReport();
+const char* duplexStr = Ethernet.duplexReport();
 ```
 
-***example***
+### MAC address
 
 ```cpp
-uint8_t mac[6]; // array for mac address
+uint8_t mac[6];
 Ethernet.macAddress(mac);
+const char* macStr = Ethernet.macAddressReport();
 ```
 
-## Socket RAM-Size
+### Socket RAM size
 
-You can de- or increase the RAM-Size for the sockets, this must be done before Ethernet.begin(...)
-
-The possible socketnumbers are:
+Reduce socket count to give each socket more RX/TX buffer:
 
 ```cpp
-Ethernet.init(1); -> 1 Socket with 16k RX/TX buffer
-Ethernet.init(2); -> 2 Socket with 8k RX/TX buffer
-Ethernet.init(4); -> 4 Socket with 4k RX/TX buffer
-Ethernet.init(); -> 8 Socket with 2k RX/TX buffer
+Ethernet.init(1);  // 1 socket  × 16 k RX/TX
+Ethernet.init(2);  // 2 sockets ×  8 k RX/TX
+Ethernet.init(4);  // 4 sockets ×  4 k RX/TX
+Ethernet.init();   // 8 sockets ×  2 k RX/TX (default)
 ```
 
-Be carefull with the MAX_SOCK_NUM in w5500.h , it cannot changed dynamicly.
+`MAX_SOCK_NUM` in `utility/w5500.h` is fixed at 8 and cannot be changed at
+runtime.
 
-***example***
-
-```cpp
-Ethernet.init(4); // reduce to 4 Socket, each with 4k RX/TX buffer
-Ethernet.begin();
-```
-    
-## RST and CS pin settings
-
-You can set the CS and (Hardware) RST (e.g. WIZ550io or USR-ES1), this must be done before Ethernet.begin(...)
-
-Standard is Pin 10 for CS and Pin 9 for RST
+### CS / RST pins
 
 ```cpp
-Ethernet.setCsPin(3); // set Pin 3 for CS
-Ethernet.setRstPin(4); // set Pin 4 for RST
+Ethernet.setCsPin(3);   // default: 10
+Ethernet.setRstPin(4);  // default: 9
 ```
 
-***example***
+Both must be called before `Ethernet.begin(...)`.
+
+### Soft / hard reset
 
 ```cpp
-Ethernet.setRstPin(); // set Pin 9 for RST
-Ethernet.begin();
+Ethernet.softreset();   // SPI-issued reset, after Ethernet.begin()
+Ethernet.hardreset();   // toggles the configured RST pin
 ```
 
-## Hard- and Software Reset
+### TCP retransmission tuning
 
-Two new functions to make resets, Softreset can done only after Ethernet.begin(...)
-
-For Hardware Reset you need to set the Pin number.
+Reduce blocking on dead sockets. Timeout is in 100 µs units.
 
 ```cpp
-Ethernet.softreset(); // performs a software reset
-Ethernet.hardreset(); // performs a hardware reset
-```
-
-***example***
-
-```cpp
-Ethernet.setRstPin(); // set Pin 9 for RST
-Ethernet.begin();
-Ethernet.hardreset();
-```
-
-## Additional TCP settings in Ethernet
-
-There are two function to set and get the retransmission timeout and retry count, this helps to solve problem with TCP connections with unexpected very long timeouts.  Beware the the timeout value multiplier is 100us!
-
-```cpp
-void Ethernet.setRtTimeOut(uint16_t timeout);
-uint16_t Ethernet.getRtTimeOut();
-void Ethernet.setRtCount(uint8_t count);
-uint8_t Ethernet.getRtCount();
-```
-
-***example***
-
-```cpp
-Ethernet.setRtTimeOut(500); // timeout 50ms
+Ethernet.setRtTimeOut(500);  // 50 ms base
 Ethernet.setRtCount(2);
-	
-// to restore the value to standard	
-Ethernet.setRtTimeOut();
-Ethernet.setRtCount();
+Ethernet.setRtTimeOut();     // restore default (2000 = 200 ms)
+Ethernet.setRtCount();       // restore default (8)
 ```
 
-## Additional settings in EthernetClient
-
-### ACK feature
-
-A 'No Delayed ACK' function is added to set and get the flag in a TCP socket.
-
-```cpp
-void setNoDelayedACK(bool ack);
-bool getNoDelayedACK();
-```
-
-***example***
+### Per-client TCP options
 
 ```cpp
 EthernetClient tcp;
 tcp.setNoDelayedACK(true);
-	
-// to restore the value to standard
-tcp.setNoDelayedACK(false);
-tcp.setNoDelayedACK();
+bool ack = tcp.getNoDelayedACK();
+
+uint8_t ip[4];  tcp.remoteIP(ip);
+uint8_t mac[6]; tcp.remoteMAC(mac);
 ```
 
-### remoteIP and remoteMAC adresses
-
-Two new functions for getting the IP and MAC address of a remote host.
+### Per-UDP-socket helpers
 
 ```cpp
-void remoteIP(uint8_t *ip);
-void remoteMAC(uint8_t *mac);
-```
-	
-## Additional settings in EthernetUDP
-
-### Broadcast feature in EthernetUDP
-
-A Broadcast blocking function is added to set and get the flag in a UDP socket.
-
-```cpp
-void setBroadcastBlock(bool block);
-bool getBroadcastBlock();
+uint8_t ip[4];  udp.remoteIP(ip);
+uint8_t mac[6]; udp.remoteMAC(mac);
 ```
 
-***example***
+---
 
-```cpp
-EthernetUDP udp;
-udp.setBroadcastBlock(true);
-	
-// to restore the value to standard
-udp.setBroadcastBlock(false);
-udp.setBroadcastBlock();
-```
-	
-### remoteIP and remoteMAC adresses
+## Credits
 
-Two new functions for getting the IP and MAC address of a remote host.
-
-```cpp
-void remoteIP(uint8_t *ip);
-void remoteMAC(uint8_t *mac);
-```
+- Upstream library: [sstaub/Ethernet3](https://github.com/sstaub/Ethernet3),
+  itself based on Arduino.org's Ethernet2 and the original Wiznet driver.
+- Claude Code

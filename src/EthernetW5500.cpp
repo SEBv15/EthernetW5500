@@ -8,7 +8,7 @@
 
  */
 
-#include "Ethernet3.h"
+#include "EthernetW5500.h"
 #include "Dhcp.h"
 
 // XXX: don't make assumptions about the value of MAX_SOCK_NUM.
@@ -24,8 +24,102 @@ void EthernetClass::setCsPin(uint8_t pinCS) {
   _pinCS = pinCS;
   }
 
-void EthernetClass::init(uint8_t maxSockNum) {
+void EthernetClass::init(uint8_t maxSockNum, uint16_t startupDelayMs) {
   _maxSockNum = maxSockNum;
+  _startupDelayMs = startupDelayMs;
+  }
+
+void EthernetClass::setAutoNegFallback(phyMode_t fallback,
+                                       uint16_t stableMs,
+                                       uint16_t totalWaitMs) {
+  _autoNegFallback = fallback;
+  _autoNegStableMs = stableMs;
+  _autoNegTotalMs = totalWaitMs;
+  }
+
+void EthernetClass::enableInterrupts(uint8_t simr, uint8_t socketImr) {
+  _simr = simr;
+  _socketImr = socketImr;
+  // SIMR is a global register, write it now if the chip is up.
+  if (_hwStatus == EthernetW5500) {
+    w5500.writeSIMR(simr);
+    for (uint8_t s = 0; s < MAX_SOCK_NUM; s++) {
+      w5500.writeSnIMR(s, socketImr);
+      }
+    }
+  }
+
+EthernetHardwareStatus EthernetClass::hardwareStatus() {
+  return _hwStatus;
+  }
+
+EthernetLinkStatus EthernetClass::linkStatus() {
+  if (_hwStatus == EthernetNoHardware) return Unknown;
+  return (w5500.getPHYCFGR() & 0x01) ? LinkON : LinkOFF;
+  }
+
+// Apply the configured auto-neg fallback. Called from begin() between
+// w5500.init() and DHCP. Quietly returns if no fallback is configured.
+// Mirrors the original ring_light.ino:151-179 block: only forces the fallback
+// when link came up but never stabilised; if link never appeared at all (e.g.
+// cable unplugged) the PHY is left in auto-neg so a later plug-in into a
+// 100M-only switch still negotiates.
+static void applyAutoNegFallback(phyMode_t fallback,
+                                 uint16_t stableMs,
+                                 uint16_t totalWaitMs) {
+  if (fallback == ALL_AUTONEG) return;
+
+  bool everUp = false;
+  bool stable = false;
+  uint16_t consecutiveUp = 0;
+  const uint16_t step = 100;
+  uint16_t needed = stableMs / step;
+  if (needed == 0) needed = 1;
+
+  for (uint16_t elapsed = 0; elapsed < totalWaitMs; elapsed += step) {
+    delay(step);
+    if (w5500.getPHYCFGR() & 0x01) {
+      everUp = true;
+      if (++consecutiveUp >= needed) {
+        stable = true;
+        break;
+        }
+      }
+    else {
+      consecutiveUp = 0;
+      }
+    }
+
+  if (stable) {
+    uint8_t phy = w5500.getPHYCFGR();
+    Serial.print(F("PHY: auto-neg ok, "));
+    Serial.print(((phy >> 1) & 1) ? F("100M") : F("10M"));
+    Serial.println(((phy >> 2) & 1) ? F("-FD") : F("-HD"));
+    }
+  else if (everUp) {
+    Serial.println(F("PHY: auto-neg unstable, forcing fallback"));
+    Ethernet.phyMode(fallback);
+    // phyMode() toggles PHY reset back-to-back with no settle. Give the PHY
+    // time to come up under the new mode before begin() proceeds to DHCP.
+    delay(50);
+    }
+  else {
+    Serial.println(F("PHY: no link yet (cable unplugged?)"));
+    }
+  }
+
+bool EthernetClass::_initChip() {
+  w5500.init(_maxSockNum, _pinCS, _startupDelayMs);
+  // VERSIONR is 0x04 on a real W5500. Anything else (typically 0xFF when SPI
+  // floats with no chip present) means no hardware.
+  _hwStatus = (w5500.readVersion() == 0x04) ? EthernetW5500 : EthernetNoHardware;
+  if (_hwStatus == EthernetNoHardware) return false;
+  applyAutoNegFallback(_autoNegFallback, _autoNegStableMs, _autoNegTotalMs);
+  // SIMR is global and survives chip init, but the per-socket Sn_IMR is
+  // re-applied each time socket() opens a socket. Touch SIMR here so the
+  // first call to enableInterrupts() before begin() still takes effect.
+  if (_simr) w5500.writeSIMR(_simr);
+  return true;
   }
 
 uint8_t EthernetClass::softreset() {
@@ -49,7 +143,7 @@ int EthernetClass::begin(void)
   _dhcp = new DhcpClass();
 
   // Initialise the basic info
-  w5500.init(_maxSockNum, _pinCS);
+  if (!_initChip()) return 0;
   w5500.setIPAddress(IPAddress(0,0,0,0).raw_address());
   #if defined(WIZ550io_WITH_MACADDRESS)
     w5500.getMACAddress(mac_address);
@@ -116,7 +210,7 @@ void EthernetClass::begin(IPAddress local_ip, IPAddress subnet, IPAddress gatewa
 
 void EthernetClass::begin(IPAddress local_ip, IPAddress subnet, IPAddress gateway, IPAddress dns_server)
 {
-  w5500.init(_maxSockNum, _pinCS);
+  _initChip();
   #if defined(PICO_RP2350) || defined(PICO_RP2040)
     uint8_t mac[6];
     uint32_t rnd1 = get_rand_32();
@@ -144,9 +238,14 @@ void EthernetClass::begin(IPAddress local_ip, IPAddress subnet, IPAddress gatewa
 
 int EthernetClass::begin(uint8_t *mac_address)
 {
+  return begin(mac_address, 60000UL, 5000UL);
+}
+
+int EthernetClass::begin(uint8_t *mac_address, unsigned long timeout, unsigned long responseTimeout)
+{
   _dhcp = new DhcpClass();
   // Initialise the basic info
-  w5500.init(_maxSockNum, _pinCS);
+  if (!_initChip()) return 0;
   w5500.setMACAddress(mac_address);
   w5500.setIPAddress(IPAddress(0,0,0,0).raw_address());
 
@@ -154,9 +253,9 @@ int EthernetClass::begin(uint8_t *mac_address)
   {
     _dhcp->setCustomHostname(_customHostname);
   }
-  
+
   // Now try to get our config info from a DHCP server
-  int ret = _dhcp->beginWithDHCP(mac_address);
+  int ret = _dhcp->beginWithDHCP(mac_address, timeout, responseTimeout);
   if(ret == 1)
   {
     // We've successfully found a DHCP server and got our configuration info, so set things
@@ -196,7 +295,7 @@ void EthernetClass::begin(uint8_t *mac_address, IPAddress local_ip, IPAddress su
 
 void EthernetClass::begin(uint8_t *mac, IPAddress local_ip, IPAddress subnet, IPAddress gateway, IPAddress dns_server)
 {
-  w5500.init(_maxSockNum, _pinCS);
+  _initChip();
   w5500.setMACAddress(mac);
   w5500.setIPAddress(local_ip.raw_address());
   w5500.setGatewayIp(gateway.raw_address());

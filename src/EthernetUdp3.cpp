@@ -32,7 +32,7 @@
 
 #include "utility/w5500.h"
 #include "utility/socket.h"
-#include "Ethernet3.h"
+#include "EthernetW5500.h"
 #include "Udp.h"
 #include "Dns.h"
 

@@ -52,10 +52,13 @@ private:
   uint16_t _autoNegTotalMs;
   uint8_t _simr;
   EthernetHardwareStatus _hwStatus;
+  bool _chipInitialized;
 
   // Chip init + version probe + optional auto-neg fallback wait + interrupt
   // mask re-apply. Returns true if the W5500 was detected. Called by every
-  // begin() overload.
+  // begin() overload but idempotent — the heavy work (soft-reset, PHY wait)
+  // only runs the first time after init()/softreset()/hardreset(), so
+  // begin() retries inside a DHCP loop don't keep wiping the PHY.
   bool _initChip();
 public:
   uint8_t _maxSockNum;
@@ -79,6 +82,7 @@ public:
     _autoNegStableMs = 1000;
     _autoNegTotalMs = 3000;
     _hwStatus = EthernetNoHardware;
+    _chipInitialized = false;
     }
 
   void setRstPin(uint8_t pinRST = 9); // for WIZ550io or USR-ES1, must set befor Ethernet.begin

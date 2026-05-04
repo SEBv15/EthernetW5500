@@ -32,6 +32,13 @@ void W5500Class::init(uint8_t socketNumbers, uint8_t ss_pin, uint16_t startupDel
   initSS();
   SPI.begin();
 
+  // Soft-reset the chip so MCU-only resets (where the W5500 keeps power and
+  // its previous state — forced PHY mode, open sockets, stale interrupt
+  // bits, etc.) start from a clean slate. Without this, a soft reset can
+  // leave the PHY stuck in whatever mode setAutoNegFallback() forced on the
+  // previous boot, and link detection never recovers without a power cycle.
+  softReset();
+
   if(socketNumbers == 1) {
     for (int i = 1; i < MAX_SOCK_NUM; i++) {
       uint8_t cntl_byte = (0x0C + (i<<5));

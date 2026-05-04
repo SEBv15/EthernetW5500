@@ -92,6 +92,12 @@ int EthernetClient::available() {
   return 0;
 }
 
+int EthernetClient::availableForWrite() {
+  if (_sock != MAX_SOCK_NUM)
+    return w5500.getTXFreeSize(_sock);
+  return 0;
+}
+
 int EthernetClient::read() {
   uint8_t b;
   if ( recv(_sock, &b, 1) > 0 )

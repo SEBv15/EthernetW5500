@@ -137,6 +137,37 @@ if (c) {
 `available()` still works as before (returns clients with pending data, may
 return the same client multiple times).
 
+### Chip soft-reset on init, and idempotent `begin()`
+
+Two related behaviour changes around startup:
+
+1. **`init()` now soft-resets the W5500.** Upstream Ethernet3 only configured
+   SPI and socket buffer sizes; whatever state the chip was in (forced PHY
+   mode, open sockets, stale interrupt bits from before an MCU-only reset)
+   carried over. The chip is now soft-reset on init so every boot — including
+   Arduino reset-button presses where the W5500 keeps power — starts from a
+   known state.
+2. **`begin()` only does the heavy chip init once.** Soft-reset, the
+   `setAutoNegFallback()` wait, and `SIMR` setup all run on the *first*
+   `begin()` after `init()` (or `softreset()` / `hardreset()`). Subsequent
+   `begin()` calls — e.g. retries inside a DHCP loop after a cable was just
+   plugged in — skip straight to DHCP. Without this, retrying `begin()` would
+   re-soft-reset the PHY each time and the link could never finish
+   negotiating.
+
+If you genuinely need a fresh chip init (after some catastrophic failure),
+call `Ethernet.init(...)`, `Ethernet.softreset()`, or `Ethernet.hardreset()`
+to clear the latch — the next `begin()` will go through the full sequence
+again.
+
+### `EthernetClient::availableForWrite()`
+
+Upstream Ethernet3 didn't override this and the inherited `Print` default
+just returns `0`, so any code that gated TCP writes on
+`client.availableForWrite() >= n` was always taking the "no space" branch
+and (typically) closing the socket. It now returns the real W5500 socket TX
+free-size, which is what callers expect.
+
 ---
 
 ## Features inherited from Ethernet3

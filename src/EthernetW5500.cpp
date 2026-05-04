@@ -27,6 +27,8 @@ void EthernetClass::setCsPin(uint8_t pinCS) {
 void EthernetClass::init(uint8_t maxSockNum, uint16_t startupDelayMs) {
   _maxSockNum = maxSockNum;
   _startupDelayMs = startupDelayMs;
+  // Force a fresh chip init on the next begin().
+  _chipInitialized = false;
   }
 
 void EthernetClass::setAutoNegFallback(phyMode_t fallback,
@@ -109,6 +111,12 @@ static void applyAutoNegFallback(phyMode_t fallback,
   }
 
 bool EthernetClass::_initChip() {
+  // Idempotent: skip the heavy work (soft-reset, PHY wait) on every begin()
+  // after the first. Without this, retrying begin() in a DHCP loop keeps
+  // soft-resetting the PHY, dropping the link briefly each time, so it never
+  // gets enough uninterrupted time to negotiate.
+  if (_chipInitialized) return _hwStatus == EthernetW5500;
+
   w5500.init(_maxSockNum, _pinCS, _startupDelayMs);
   // VERSIONR is 0x04 on a real W5500. Anything else (typically 0xFF when SPI
   // floats with no chip present) means no hardware.
@@ -119,14 +127,19 @@ bool EthernetClass::_initChip() {
   // re-applied each time socket() opens a socket. Touch SIMR here so the
   // first call to enableInterrupts() before begin() still takes effect.
   if (_simr) w5500.writeSIMR(_simr);
+  _chipInitialized = true;
   return true;
   }
 
 uint8_t EthernetClass::softreset() {
+  // Force the next begin() to re-do chip init (soft-reset, PHY wait, etc.).
+  _chipInitialized = false;
   return w5500.softReset();
   }
 
 void EthernetClass::hardreset() {
+  // Force the next begin() to re-do chip init.
+  _chipInitialized = false;
   if(_pinRST != 0) {
     digitalWrite(_pinRST, LOW);
     delay(1);
